@@ -46,4 +46,7 @@
         (terpri)
         (return-from toplevel-loop t))
       (error (c)
-        (uiop:println c)))))
+        (uiop:println c))
+      (sb-sys:interactive-interrupt (c)
+        (declare (ignore c))
+        (terpri)))))
