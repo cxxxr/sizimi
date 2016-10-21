@@ -1,0 +1,51 @@
+;; -*- mode:lisp -*-
+
+(in-package :sizimi-user)
+
+(ql:quickload :cl-ansi-text :silent t)
+
+(setf *prompt-function*
+      (lambda (first-line-p)
+        (when first-line-p
+          (let ((str (namestring (uiop:getcwd))))
+            (setf str (ppcre:regex-replace (list :sequence (namestring (user-homedir-pathname))) str "~/"))
+            (setf str (string-right-trim "/" str))
+            (format nil "~A$ "
+                    (cl-ansi-text:green str :effect :bright))))))
+
+(alias "ls" "ls --color -F")
+
+(defvar *text* "")
+
+(register-virtual-target "/dev/text"
+                         (lambda (string type)
+                           (ecase type
+                             (:overwrite
+                                (setf *text* string))
+                             (:append
+                                (setf *text*
+                                      (concatenate 'string
+                                                   *text*
+                                                   string))))))
+
+;; $ command > (:var symbol)
+
+(let ((var))
+  (register-virtual-target (lambda (x)
+                             (when (and (consp x)
+                                        (= 2 (length x))
+                                        (eq :var (car x))
+                                        (symbolp (cadr x)))
+                               (setf var (cadr x))
+                               t))
+                           (lambda (string type)
+                             (ecase type
+                               (:overwrite
+                                  (set var
+                                       string))
+                               (:append
+                                  (set var
+                                       (cons string
+                                             (if (boundp var)
+                                               (symbol-value var)
+                                               nil))))))))
