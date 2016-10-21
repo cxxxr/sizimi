@@ -171,7 +171,7 @@
       (parse-integer n))))
 
 (defun expand-files (str)
-  (mapcar #'namestring (directory str)))
+  (mapcar #'namestring (directory str :resolve-symlinks nil)))
 
 (defun maybe-expand-alias (argv)
   (let ((string (aliasp (first argv))))
