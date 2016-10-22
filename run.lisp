@@ -431,26 +431,6 @@
     (otherwise
        :simple-lisp-form)))
 
-(defun simple-command (command)
-  (multiple-value-bind (first args redirect-specs virtual-redirect-spec)
-      (parse-argv command)
-    (let ((command (command-type first)))
-      (case command
-        (:compound-lisp-form
-           (lisp-eval `(progn ,first ,@args)
-                      redirect-specs
-                      virtual-redirect-spec))
-        (:simple-lisp-form
-           (lisp-apply first args
-                       redirect-specs
-                       virtual-redirect-spec))
-        (otherwise
-           (run-command command
-                        args
-                        redirect-specs
-                        virtual-redirect-spec
-                        t))))))
-
 (defun call-with-pipeline (prev-read-fd
                            prev-write-fd
                            next-read-fd
@@ -532,19 +512,17 @@
 
 (defun pipeline (input)
   (let ((command-list (split-sequence "|" input :test #'equal)))
-    (if (= 1 (length command-list))
-      (simple-command (first command-list))
-      (let* ((pids (make-array (length command-list) :initial-element nil))
-             (last-eval-status (pipeline-aux pids 0 command-list nil nil 0))
-             (status))
-        (loop for i from 0
-              for pid across pids
-              when pid do
-                (setf status
-                      (ash (nth-value 1 (sb-posix:waitpid pid 0)) -8)))
-        (if (aref pids (1- (length pids)))
-          status
-          last-eval-status)))))
+    (let* ((pids (make-array (length command-list) :initial-element nil))
+           (last-eval-status (pipeline-aux pids 0 command-list nil nil 0))
+           (status))
+      (loop for i from 0
+            for pid across pids
+            when pid do
+              (setf status
+                    (ash (nth-value 1 (sb-posix:waitpid pid 0)) -8)))
+      (if (aref pids (1- (length pids)))
+        status
+        last-eval-status))))
 
 (defun true-p (x)
   (or (and (integerp x) (= x 0))
