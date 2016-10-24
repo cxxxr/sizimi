@@ -455,58 +455,57 @@
       (when stdin (close stdin))
       (when stdout (close stdout)))))
 
-(defun pipeline-aux (pids pipeline-pos command-list
-                     prev-pipe
-                     last-eval-status)
-  (if (null command-list)
-    last-eval-status
-    (let ((next-pipe (pipe)))
-      (let* ((command (parse-argv (first command-list)))
-             (type (command-type command)))
-        (ecase type
-          ((:compound-lisp-form
-            :simple-lisp-form)
-           (setf last-eval-status
-                 (call-with-pipeline
-                  prev-pipe
-                  next-pipe
-                  (rest command-list)
-                  (if (eq type :simple-lisp-form)
-                      (lambda (stdin stdout)
-                        (lisp-apply command
-                                    :stdin (or stdin *standard-input*)
-                                    :stdout (or stdout *standard-output*)))
-                      (lambda (stdin stdout)
-                        (lisp-eval `(progn ,(command-name command) ,@(command-args command))
-                                   (command-redirect-specs command)
-                                   (command-virtual-redirect-spec command)
-                                   :stdin (or stdin *standard-input*)
-                                   :stdout (or stdout *standard-output*)))))))
-          (:simple-command
-           (setf (aref pids pipeline-pos)
-                 (run-command command
-                              prev-pipe
-                              (when (rest command-list)
-                                next-pipe))))))
-      (pipeline-aux pids
-                    (1+ pipeline-pos)
-                    (rest command-list)
-                    next-pipe
-                    last-eval-status))))
+(defvar *children* nil)
+
+(defun pipeline-aux (command-list prev-pipe)
+  (when command-list
+    (let* ((next-pipe (when (rest command-list) (pipe)))
+           (command (parse-argv (first command-list)))
+           (type (command-type command))
+           (eval-value)
+           (eval-p))
+      (ecase type
+        ((:compound-lisp-form
+          :simple-lisp-form)
+         (setf eval-p t)
+         (setf eval-value
+               (call-with-pipeline prev-pipe
+                                   next-pipe
+                                   (rest command-list)
+                                   (if (eq type :simple-lisp-form)
+                                       (lambda (stdin stdout)
+                                         (lisp-apply command
+                                                     :stdin (or stdin *standard-input*)
+                                                     :stdout (or stdout *standard-output*)))
+                                       (lambda (stdin stdout)
+                                         (lisp-eval `(progn ,(command-name command)
+                                                            ,@(command-args command))
+                                                    (command-redirect-specs command)
+                                                    (command-virtual-redirect-spec command)
+                                                    :stdin (or stdin *standard-input*)
+                                                    :stdout (or stdout *standard-output*)))))))
+        (:simple-command
+         (push (run-command command
+                            prev-pipe
+                            (when (rest command-list)
+                              next-pipe))
+               *children*)))
+      (cond ((rest command-list)
+             (pipeline-aux (rest command-list)
+                           next-pipe))
+            (eval-p
+             (dolist (pid *children*)
+               (sb-posix:waitpid pid 0))
+             eval-value)
+            (t
+             (dolist (pid (rest *children*))
+               (sb-posix:waitpid pid 0))
+             (ash (nth-value 1 (sb-posix:waitpid (first *children*) 0)) -8))))))
 
 (defun pipeline (input)
-  (let ((command-list (split-sequence "|" input :test #'equal)))
-    (let* ((pids (make-array (length command-list) :initial-element nil))
-           (last-eval-status (pipeline-aux pids 0 command-list nil 0))
-           (status))
-      (loop for i from 0
-            for pid across pids
-            when pid do
-              (setf status
-                    (ash (nth-value 1 (sb-posix:waitpid pid 0)) -8)))
-      (if (aref pids (1- (length pids)))
-        status
-        last-eval-status))))
+  (let ((command-list (split-sequence "|" input :test #'equal))
+        (*children* '()))
+    (pipeline-aux command-list nil)))
 
 (defun true-p (x)
   (or (and (integerp x) (= x 0))
