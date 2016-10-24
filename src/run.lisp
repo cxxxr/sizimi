@@ -22,6 +22,15 @@
    :run))
 (in-package :sizimi.run)
 
+(defstruct pipe
+  read-fd
+  write-fd)
+
+(defun pipe ()
+  (multiple-value-bind (read-fd write-fd)
+      (sb-posix:pipe)
+    (make-pipe :read-fd read-fd :write-fd write-fd)))
+
 (cffi:defcvar *errno* :int)
 (cffi:defcfun ("execvp" %execvp) :int (file :pointer) (argv :pointer))
 (cffi:defcfun ("strerror" %strerror) :string (errno :int))
@@ -357,8 +366,7 @@
 
 (defun run-command-internal (file args redirect-specs virtual-redirect-spec
                              child-hook before-parent-hook after-parent-hook)
-  (let ((virtual-pipes (when virtual-redirect-spec
-                         (multiple-value-list (sb-posix:pipe)))))
+  (let ((virtual-pipe (when virtual-redirect-spec (pipe))))
     (let ((pid (sb-posix:fork)))
       (cond
         ((zerop pid)
@@ -367,33 +375,31 @@
                                  (uiop:quit -1))))
            (when child-hook (funcall child-hook))
            (proceed-redirects-for-fd redirect-specs)
-           (when virtual-pipes
-             (destructuring-bind (read-fd write-fd) virtual-pipes
-               (sb-posix:dup2 write-fd +stdout+)
-               (sb-posix:close write-fd)
-               (sb-posix:close read-fd)))
+           (when virtual-pipe
+             (sb-posix:dup2 (pipe-write-fd virtual-pipe) +stdout+)
+             (sb-posix:close (pipe-write-fd virtual-pipe))
+             (sb-posix:close (pipe-read-fd virtual-pipe)))
            (execvp file args)))
         (t
          (let (output-str)
            (when before-parent-hook (funcall before-parent-hook pid))
            (when virtual-redirect-spec
-             (destructuring-bind (read-fd write-fd) virtual-pipes
-               (sb-posix:close write-fd)
-               (let* ((count 100)
-                      (buf (cffi:foreign-alloc :unsigned-char
-                                               :count count
-                                               :initial-element 0))
-                      (octets (make-array count :element-type '(unsigned-byte 8))))
-                 (setf output-str
-                       (apply #'concatenate 'string
-                              (loop for n = (sb-posix:read read-fd buf count)
-                                    until (zerop n)
-                                    collect (loop for i from 0 below n
-                                                  do (setf (aref octets i)
-                                                           (cffi:mem-aref buf :unsigned-char i))
-                                                  finally (return (babel:octets-to-string
-                                                                   octets :end n)))))))
-               (sb-posix:close read-fd)))
+             (sb-posix:close (pipe-write-fd virtual-pipe))
+             (let* ((count 100)
+                    (buf (cffi:foreign-alloc :unsigned-char
+                                             :count count
+                                             :initial-element 0))
+                    (octets (make-array count :element-type '(unsigned-byte 8))))
+               (setf output-str
+                     (apply #'concatenate 'string
+                            (loop for n = (sb-posix:read (pipe-read-fd virtual-pipe) buf count)
+                                  until (zerop n)
+                                  collect (loop for i from 0 below n
+                                                do (setf (aref octets i)
+                                                         (cffi:mem-aref buf :unsigned-char i))
+                                                finally (return (babel:octets-to-string
+                                                                 octets :end n)))))))
+             (sb-posix:close (pipe-read-fd virtual-pipe)))
            (let ((result nil))
              (when after-parent-hook
                (setf result (funcall after-parent-hook pid)))
@@ -431,34 +437,30 @@
     (otherwise
        :simple-lisp-form)))
 
-(defun call-with-pipeline (prev-read-fd
-                           prev-write-fd
-                           next-read-fd
-                           next-write-fd
+(defun call-with-pipeline (prev-pipe
+                           next-pipe
                            nextp
                            body-fn)
-  (declare (ignore next-read-fd))
   (let ((stdin
-          (when prev-read-fd
-            (sb-sys:make-fd-stream prev-read-fd :input t)))
+          (when prev-pipe
+            (sb-sys:make-fd-stream (pipe-read-fd prev-pipe) :input t)))
         (stdout
           (when nextp
-            (sb-sys:make-fd-stream next-write-fd :output t))))
-    (when prev-write-fd
-      (sb-posix:close prev-write-fd))
+            (sb-sys:make-fd-stream (pipe-write-fd next-pipe) :output t))))
+    (when prev-pipe
+      (sb-posix:close (pipe-write-fd prev-pipe)))
     (unwind-protect
          (funcall body-fn stdin stdout)
-      (when prev-read-fd (sb-posix:close prev-read-fd))
+      (when prev-pipe (sb-posix:close (pipe-read-fd prev-pipe)))
       (when stdin (close stdin))
       (when stdout (close stdout)))))
 
 (defun pipeline-aux (pids pipeline-pos command-list
-                     prev-read-fd prev-write-fd
+                     prev-pipe
                      last-eval-status)
   (if (null command-list)
     last-eval-status
-    (multiple-value-bind (next-read-fd next-write-fd)
-        (sb-posix:pipe)
+    (let ((next-pipe (pipe)))
       (multiple-value-bind (first args redirect-specs virtual-redirect-spec)
           (parse-argv (first command-list))
         (let ((command (command-type first)))
@@ -467,7 +469,8 @@
               :simple-lisp-form)
                (setf last-eval-status
                      (call-with-pipeline
-                      prev-read-fd prev-write-fd next-read-fd next-write-fd
+                      prev-pipe
+                      next-pipe
                       (rest command-list)
                       (if (eq command :simple-lisp-form)
                         (lambda (stdin stdout)
@@ -489,31 +492,30 @@
                 redirect-specs
                 virtual-redirect-spec
                 (lambda ()
-                  (when prev-read-fd
-                    (sb-posix:close prev-write-fd)
-                    (sb-posix:dup2 prev-read-fd +stdin+)
-                    (sb-posix:close prev-read-fd))
+                  (when prev-pipe
+                    (sb-posix:close (pipe-write-fd prev-pipe))
+                    (sb-posix:dup2 (pipe-read-fd prev-pipe) +stdin+)
+                    (sb-posix:close (pipe-read-fd prev-pipe)))
                   (when (rest command-list)
-                    (sb-posix:close next-read-fd)
-                    (sb-posix:dup2 next-write-fd +stdout+)
-                    (sb-posix:close next-write-fd)))
+                    (sb-posix:close (pipe-read-fd next-pipe))
+                    (sb-posix:dup2 (pipe-write-fd next-pipe) +stdout+)
+                    (sb-posix:close (pipe-write-fd next-pipe))))
                 (lambda (pid)
                   (setf (aref pids pipeline-pos) pid)
-                  (when prev-read-fd
-                    (sb-posix:close prev-read-fd)
-                    (sb-posix:close prev-write-fd)))
+                  (when prev-pipe
+                    (sb-posix:close (pipe-read-fd prev-pipe))
+                    (sb-posix:close (pipe-write-fd prev-pipe))))
                 #'identity)))))
       (pipeline-aux pids
                     (1+ pipeline-pos)
                     (rest command-list)
-                    next-read-fd
-                    next-write-fd
+                    next-pipe
                     last-eval-status))))
 
 (defun pipeline (input)
   (let ((command-list (split-sequence "|" input :test #'equal)))
     (let* ((pids (make-array (length command-list) :initial-element nil))
-           (last-eval-status (pipeline-aux pids 0 command-list nil nil 0))
+           (last-eval-status (pipeline-aux pids 0 command-list nil 0))
            (status))
       (loop for i from 0
             for pid across pids
