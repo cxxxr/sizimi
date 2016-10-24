@@ -365,8 +365,7 @@
              :stdout stdout
              :upcase (not (get (command-name command) 'quote-args))))
 
-(defun run-command-internal (command
-                             child-hook before-parent-hook after-parent-hook)
+(defun run-command (command prev-pipe next-pipe)
   (let ((file (command-name command))
         (args (command-args command))
         (redirect-specs (command-redirect-specs command))
@@ -378,7 +377,14 @@
            (handler-bind ((error (lambda (c)
                                    (warn c)
                                    (uiop:quit -1))))
-             (when child-hook (funcall child-hook))
+             (when prev-pipe
+               (sb-posix:close (pipe-write-fd prev-pipe))
+               (sb-posix:dup2 (pipe-read-fd prev-pipe) +stdin+)
+               (sb-posix:close (pipe-read-fd prev-pipe)))
+             (when next-pipe
+               (sb-posix:close (pipe-read-fd next-pipe))
+               (sb-posix:dup2 (pipe-write-fd next-pipe) +stdout+)
+               (sb-posix:close (pipe-write-fd next-pipe)))
              (proceed-redirects-for-fd redirect-specs)
              (when virtual-pipe
                (sb-posix:dup2 (pipe-write-fd virtual-pipe) +stdout+)
@@ -388,7 +394,9 @@
                      (mapcar #'arg-to-string args))))
           (t
            (let (output-str)
-             (when before-parent-hook (funcall before-parent-hook pid))
+             (when prev-pipe
+               (sb-posix:close (pipe-read-fd prev-pipe))
+               (sb-posix:close (pipe-write-fd prev-pipe)))
              (when virtual-redirect-spec
                (sb-posix:close (pipe-write-fd virtual-pipe))
                (let* ((count 100)
@@ -406,13 +414,10 @@
                                                   finally (return (babel:octets-to-string
                                                                    octets :end n)))))))
                (sb-posix:close (pipe-read-fd virtual-pipe)))
-             (let ((result nil))
-               (when after-parent-hook
-                 (setf result (funcall after-parent-hook pid)))
-               (when output-str
-                 (destructuring-bind (type target) virtual-redirect-spec
-                   (funcall target output-str type)))
-               result))))))))
+             (when output-str
+               (destructuring-bind (type target) virtual-redirect-spec
+                 (funcall target output-str type)))
+             pid)))))))
 
 (defun coerce-command (cmdname)
   (or (search-path cmdname)
@@ -478,23 +483,11 @@
                                    :stdin (or stdin *standard-input*)
                                    :stdout (or stdout *standard-output*)))))))
           (:simple-command
-           (run-command-internal
-            command
-            (lambda ()
-              (when prev-pipe
-                (sb-posix:close (pipe-write-fd prev-pipe))
-                (sb-posix:dup2 (pipe-read-fd prev-pipe) +stdin+)
-                (sb-posix:close (pipe-read-fd prev-pipe)))
-              (when (rest command-list)
-                (sb-posix:close (pipe-read-fd next-pipe))
-                (sb-posix:dup2 (pipe-write-fd next-pipe) +stdout+)
-                (sb-posix:close (pipe-write-fd next-pipe))))
-            (lambda (pid)
-              (setf (aref pids pipeline-pos) pid)
-              (when prev-pipe
-                (sb-posix:close (pipe-read-fd prev-pipe))
-                (sb-posix:close (pipe-write-fd prev-pipe))))
-            #'identity))))
+           (setf (aref pids pipeline-pos)
+                 (run-command command
+                              prev-pipe
+                              (when (rest command-list)
+                                next-pipe))))))
       (pipeline-aux pids
                     (1+ pipeline-pos)
                     (rest command-list)
