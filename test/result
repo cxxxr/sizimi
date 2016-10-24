@@ -1,0 +1,27 @@
+sizimi> echo "echo"
+echo
+sizimi> (load "init.lisp")
+
+T
+sizimi> cat text.txt | strip-whitespaces
+aaaaa
+abbbbbbb
+ddddd
+
+NIL
+sizimi> princ "hello" | cat
+hellosizimi> (+ 1 2 3)
+
+6
+sizimi> list 1 2 3
+
+(1 2 3)
+sizimi> princ "abcd" >> /dev/foo
+
+"abcd"
+sizimi> princ *text*
+abcd
+"abcd"
+sizimi> ls | cat | wc
+      5       5      41
+sizimi> 

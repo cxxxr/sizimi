@@ -1,0 +1,9 @@
+echo "echo"
+(load "init.lisp")
+cat text.txt | strip-whitespaces
+princ "hello" | cat
+(+ 1 2 3)
+list 1 2 3
+princ "abcd" >> /dev/foo
+princ *text*
+ls | cat | wc
