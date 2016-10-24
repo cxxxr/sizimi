@@ -9,12 +9,13 @@
                :cl-ppcre
                :alexandria
                :split-sequence)
-  :serial t
-  :components ((:file "error")
-               (:file "util")
-               (:file "env")
-               (:file "complete")
-               (:file "reader")
-               (:file "run")
-               (:file "sizimi")
-               (:file "sizimi-user")))
+  :components ((:module "src"
+                :serial t
+                :components ((:file "error")
+                             (:file "util")
+                             (:file "env")
+                             (:file "complete")
+                             (:file "reader")
+                             (:file "run")
+                             (:file "sizimi")
+                             (:file "sizimi-user")))))
