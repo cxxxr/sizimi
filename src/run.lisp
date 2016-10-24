@@ -31,6 +31,12 @@
       (sb-posix:pipe)
     (make-pipe :read-fd read-fd :write-fd write-fd)))
 
+(defstruct command
+  name
+  args
+  redirect-specs
+  virtual-redirect-spec)
+
 (cffi:defcvar *errno* :int)
 (cffi:defcfun ("execvp" %execvp) :int (file :pointer) (argv :pointer))
 (cffi:defcfun ("strerror" %strerror) :string (errno :int))
@@ -97,14 +103,10 @@
 
 (setf (get '& 'quote-args) t)
 (defun & (&rest argv)
-  (multiple-value-bind (command args redirect-spec virtual-redirect-spec)
-      (parse-argv argv)
-    (assert (not virtual-redirect-spec))
-    (run-command (coerce-command (string command))
-                 args
-                 redirect-spec
-                 nil
-                 nil)))
+  (let ((command (parse-argv argv)))
+    (assert (not (command-virtual-redirect-spec command)))
+    ;; !!!
+    ))
 
 (defun cd (&optional (dir (user-homedir-pathname)))
   (let ((result (uiop:chdir dir)))
@@ -243,11 +245,10 @@
                           (expand-files (arg-to-string arg)))))
                   (dolist (str (or files (list arg)))
                     (push str args))))))
-    (values (first argv)
-            (nreverse args)
-            (delete-duplicates (nreverse redirect-specs)
-                               :key #'second)
-            virtual-redirect-spec)))
+    (make-command :name (first argv)
+                  :args (nreverse args)
+                  :redirect-specs (delete-duplicates (nreverse redirect-specs) :key #'second)
+                  :virtual-redirect-spec virtual-redirect-spec)))
 
 (defun proceed-redirects-for-fd (redirect-specs)
   (loop for redirect-spec in redirect-specs
@@ -348,94 +349,88 @@
                           -1))
         (mapc 'funcall cleanup-hooks)))))
 
-(defun lisp-apply (symbol args
-                   redirect-specs virtual-redirect-spec
+(defun lisp-apply (command
                    &key
-                   (stdin *standard-input*)
-                   (stdout *standard-output*))
-  (lisp-eval (cons symbol
-                   (if (get symbol 'quote-args)
-                     (mapcar (lambda (arg)
-                               `(quote ,arg))
-                             args)
-                     args))
-             redirect-specs virtual-redirect-spec
+                     (stdin *standard-input*)
+                     (stdout *standard-output*))
+  (lisp-eval (cons (command-name command)
+                   (if (get (command-name command) 'quote-args)
+                       (mapcar (lambda (arg)
+                                 `(quote ,arg))
+                               (command-args command))
+                       (command-args command)))
+             (command-redirect-specs command)
+             (command-virtual-redirect-spec command)
              :stdin stdin
              :stdout stdout
-             :upcase (not (get symbol 'quote-args))))
+             :upcase (not (get (command-name command) 'quote-args))))
 
-(defun run-command-internal (file args redirect-specs virtual-redirect-spec
+(defun run-command-internal (command
                              child-hook before-parent-hook after-parent-hook)
-  (let ((virtual-pipe (when virtual-redirect-spec (pipe))))
-    (let ((pid (sb-posix:fork)))
-      (cond
-        ((zerop pid)
-         (handler-bind ((error (lambda (c)
-                                 (warn c)
-                                 (uiop:quit -1))))
-           (when child-hook (funcall child-hook))
-           (proceed-redirects-for-fd redirect-specs)
-           (when virtual-pipe
-             (sb-posix:dup2 (pipe-write-fd virtual-pipe) +stdout+)
-             (sb-posix:close (pipe-write-fd virtual-pipe))
-             (sb-posix:close (pipe-read-fd virtual-pipe)))
-           (execvp file args)))
-        (t
-         (let (output-str)
-           (when before-parent-hook (funcall before-parent-hook pid))
-           (when virtual-redirect-spec
-             (sb-posix:close (pipe-write-fd virtual-pipe))
-             (let* ((count 100)
-                    (buf (cffi:foreign-alloc :unsigned-char
-                                             :count count
-                                             :initial-element 0))
-                    (octets (make-array count :element-type '(unsigned-byte 8))))
-               (setf output-str
-                     (apply #'concatenate 'string
-                            (loop for n = (sb-posix:read (pipe-read-fd virtual-pipe) buf count)
-                                  until (zerop n)
-                                  collect (loop for i from 0 below n
-                                                do (setf (aref octets i)
-                                                         (cffi:mem-aref buf :unsigned-char i))
-                                                finally (return (babel:octets-to-string
-                                                                 octets :end n)))))))
-             (sb-posix:close (pipe-read-fd virtual-pipe)))
-           (let ((result nil))
-             (when after-parent-hook
-               (setf result (funcall after-parent-hook pid)))
-             (when output-str
-               (destructuring-bind (type target) virtual-redirect-spec
-                 (funcall target output-str type)))
-             result)))))))
-
-(defun run-command (file args redirect-specs virtual-redirect-spec wait-p)
-  (run-command-internal file
-                        args
-                        redirect-specs
-                        virtual-redirect-spec
-                        nil
-                        nil
-                        (lambda (pid)
-                          (if wait-p
-                            (ash (nth-value 1 (sb-posix:waitpid pid 0)) -8)
-                            pid))))
+  (let ((file (command-name command))
+        (args (command-args command))
+        (redirect-specs (command-redirect-specs command))
+        (virtual-redirect-spec (command-virtual-redirect-spec command)))
+    (let ((virtual-pipe (when virtual-redirect-spec (pipe))))
+      (let ((pid (sb-posix:fork)))
+        (cond
+          ((zerop pid)
+           (handler-bind ((error (lambda (c)
+                                   (warn c)
+                                   (uiop:quit -1))))
+             (when child-hook (funcall child-hook))
+             (proceed-redirects-for-fd redirect-specs)
+             (when virtual-pipe
+               (sb-posix:dup2 (pipe-write-fd virtual-pipe) +stdout+)
+               (sb-posix:close (pipe-write-fd virtual-pipe))
+               (sb-posix:close (pipe-read-fd virtual-pipe)))
+             (execvp (arg-to-string file)
+                     (mapcar #'arg-to-string args))))
+          (t
+           (let (output-str)
+             (when before-parent-hook (funcall before-parent-hook pid))
+             (when virtual-redirect-spec
+               (sb-posix:close (pipe-write-fd virtual-pipe))
+               (let* ((count 100)
+                      (buf (cffi:foreign-alloc :unsigned-char
+                                               :count count
+                                               :initial-element 0))
+                      (octets (make-array count :element-type '(unsigned-byte 8))))
+                 (setf output-str
+                       (apply #'concatenate 'string
+                              (loop for n = (sb-posix:read (pipe-read-fd virtual-pipe) buf count)
+                                    until (zerop n)
+                                    collect (loop for i from 0 below n
+                                                  do (setf (aref octets i)
+                                                           (cffi:mem-aref buf :unsigned-char i))
+                                                  finally (return (babel:octets-to-string
+                                                                   octets :end n)))))))
+               (sb-posix:close (pipe-read-fd virtual-pipe)))
+             (let ((result nil))
+               (when after-parent-hook
+                 (setf result (funcall after-parent-hook pid)))
+               (when output-str
+                 (destructuring-bind (type target) virtual-redirect-spec
+                   (funcall target output-str type)))
+               result))))))))
 
 (defun coerce-command (cmdname)
   (or (search-path cmdname)
       cmdname))
 
 (defun command-type (command)
-  (typecase command
-    (cons
+  (let ((cmdname (command-name command)))
+    (typecase cmdname
+      (cons
        :compound-lisp-form)
-    (symbol
-       (if (fboundp (symbol-upcase command))
-         :simple-lisp-form
-         (coerce-command (string command))))
-    (string
-       (coerce-command command))
-    (otherwise
-       :simple-lisp-form)))
+      (symbol
+       (if (fboundp (symbol-upcase cmdname))
+           :simple-lisp-form
+           :simple-command))
+      (string
+       :simple-command)
+      (otherwise
+       :simple-lisp-form))))
 
 (defun call-with-pipeline (prev-pipe
                            next-pipe
@@ -461,51 +456,45 @@
   (if (null command-list)
     last-eval-status
     (let ((next-pipe (pipe)))
-      (multiple-value-bind (first args redirect-specs virtual-redirect-spec)
-          (parse-argv (first command-list))
-        (let ((command (command-type first)))
-          (case command
-            ((:compound-lisp-form
-              :simple-lisp-form)
-               (setf last-eval-status
-                     (call-with-pipeline
-                      prev-pipe
-                      next-pipe
-                      (rest command-list)
-                      (if (eq command :simple-lisp-form)
-                        (lambda (stdin stdout)
-                          (lisp-apply first args
-                                      redirect-specs
-                                      virtual-redirect-spec
-                                      :stdin (or stdin *standard-input*)
-                                      :stdout (or stdout *standard-output*)))
-                        (lambda (stdin stdout)
-                          (lisp-eval `(progn ,first ,@args)
-                                     redirect-specs
-                                     virtual-redirect-spec
-                                     :stdin (or stdin *standard-input*)
-                                     :stdout (or stdout *standard-output*)))))))
-            (otherwise
-               (run-command-internal
-                command
-                args
-                redirect-specs
-                virtual-redirect-spec
-                (lambda ()
-                  (when prev-pipe
-                    (sb-posix:close (pipe-write-fd prev-pipe))
-                    (sb-posix:dup2 (pipe-read-fd prev-pipe) +stdin+)
-                    (sb-posix:close (pipe-read-fd prev-pipe)))
-                  (when (rest command-list)
-                    (sb-posix:close (pipe-read-fd next-pipe))
-                    (sb-posix:dup2 (pipe-write-fd next-pipe) +stdout+)
-                    (sb-posix:close (pipe-write-fd next-pipe))))
-                (lambda (pid)
-                  (setf (aref pids pipeline-pos) pid)
-                  (when prev-pipe
-                    (sb-posix:close (pipe-read-fd prev-pipe))
-                    (sb-posix:close (pipe-write-fd prev-pipe))))
-                #'identity)))))
+      (let* ((command (parse-argv (first command-list)))
+             (type (command-type command)))
+        (ecase type
+          ((:compound-lisp-form
+            :simple-lisp-form)
+           (setf last-eval-status
+                 (call-with-pipeline
+                  prev-pipe
+                  next-pipe
+                  (rest command-list)
+                  (if (eq type :simple-lisp-form)
+                      (lambda (stdin stdout)
+                        (lisp-apply command
+                                    :stdin (or stdin *standard-input*)
+                                    :stdout (or stdout *standard-output*)))
+                      (lambda (stdin stdout)
+                        (lisp-eval `(progn ,(command-name command) ,@(command-args command))
+                                   (command-redirect-specs command)
+                                   (command-virtual-redirect-spec command)
+                                   :stdin (or stdin *standard-input*)
+                                   :stdout (or stdout *standard-output*)))))))
+          (:simple-command
+           (run-command-internal
+            command
+            (lambda ()
+              (when prev-pipe
+                (sb-posix:close (pipe-write-fd prev-pipe))
+                (sb-posix:dup2 (pipe-read-fd prev-pipe) +stdin+)
+                (sb-posix:close (pipe-read-fd prev-pipe)))
+              (when (rest command-list)
+                (sb-posix:close (pipe-read-fd next-pipe))
+                (sb-posix:dup2 (pipe-write-fd next-pipe) +stdout+)
+                (sb-posix:close (pipe-write-fd next-pipe))))
+            (lambda (pid)
+              (setf (aref pids pipeline-pos) pid)
+              (when prev-pipe
+                (sb-posix:close (pipe-read-fd prev-pipe))
+                (sb-posix:close (pipe-write-fd prev-pipe))))
+            #'identity))))
       (pipeline-aux pids
                     (1+ pipeline-pos)
                     (rest command-list)
