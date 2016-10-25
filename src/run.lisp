@@ -64,6 +64,11 @@
 (defun arg-to-string (arg)
   (princ-to-string arg))
 
+(defmacro defcommand (name parameters &body body)
+  `(progn
+     (setf (get ',name :command) t)
+     (defun ,name ,parameters ,@body)))
+
 (defvar *aliases* nil)
 
 (defun alias-value (name)
@@ -81,7 +86,7 @@
 (defun set-alias (name value)
   (push (cons name value) *aliases*))
 
-(defun alias (&rest args)
+(defcommand alias (&rest args)
   (case (length args)
     (0 (show-aliases))
     (1 (show-alias (first args)))
@@ -89,7 +94,7 @@
      (set-alias (first args) (second args))))
   (values))
 
-(defun unalias (name)
+(defcommand unalias (name)
   (setf *aliases* (remove name *aliases* :test #'soft-string= :key #'car))
   (values))
 
@@ -105,16 +110,12 @@
         else
           return input))
 
-(defun aliasp (name)
-  (gethash (arg-to-string name) *aliases*))
-
-(setf (get '& 'quote-args) t)
-(defun & (&rest argv)
+(defcommand & (&rest argv)
   (let ((arg-struct (parse-argv argv)))
     (assert (not (arg-struct-virtual-redirect-spec arg-struct)))
     (run-command arg-struct)))
 
-(defun cd (&optional (dir (user-homedir-pathname)))
+(defcommand cd (&optional (dir (user-homedir-pathname)))
   (let ((result (uiop:chdir dir)))
     (if (zerop result)
         (let ((newdir (uiop:getcwd)))
@@ -310,17 +311,17 @@
                    &key
                      (stdin *standard-input*)
                      (stdout *standard-output*))
-  (lisp-eval (cons (arg-struct-name arg-struct)
-                   (if (get (arg-struct-name arg-struct) 'quote-args)
-                       (mapcar (lambda (arg)
-                                 `(quote ,arg))
-                               (arg-struct-args arg-struct))
-                       (arg-struct-args arg-struct)))
-             (arg-struct-redirect-specs arg-struct)
-             (arg-struct-virtual-redirect-spec arg-struct)
-             :stdin stdin
-             :stdout stdout
-             :upcase (not (get (arg-struct-name arg-struct) 'quote-args))))
+  (let* ((name (symbol-upcase (arg-struct-name arg-struct)))
+         (args (arg-struct-args arg-struct))
+         (commandp (get name :command)))
+    (lisp-eval (if commandp
+                   (cons name (mapcar #'arg-to-string args))
+                   (cons name args))
+               (arg-struct-redirect-specs arg-struct)
+               (arg-struct-virtual-redirect-spec arg-struct)
+               :stdin stdin
+               :stdout stdout
+               :upcase (not commandp))))
 
 (defun proceed-redirects-for-fd (redirect-specs)
   (loop for redirect-spec in redirect-specs
