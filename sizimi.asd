@@ -20,4 +20,5 @@
                              (:file "complete")
                              (:file "reader")
                              (:file "run")
+                             (:file "alias")
                              (:file "sizimi")))))
