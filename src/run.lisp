@@ -105,8 +105,7 @@
 (defun & (&rest argv)
   (let ((command (parse-argv argv)))
     (assert (not (command-virtual-redirect-spec command)))
-    ;; !!!
-    ))
+    (run-command command)))
 
 (defun cd (&optional (dir (user-homedir-pathname)))
   (let ((result (uiop:chdir dir)))
@@ -365,7 +364,7 @@
              :stdout stdout
              :upcase (not (get (command-name command) 'quote-args))))
 
-(defun run-command (command prev-pipe next-pipe)
+(defun run-command (command &optional prev-pipe next-pipe)
   (let ((file (command-name command))
         (args (command-args command))
         (redirect-specs (command-redirect-specs command))
