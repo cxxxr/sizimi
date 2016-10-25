@@ -37,9 +37,10 @@
 (defun pipe ()
   (multiple-value-bind (read-fd write-fd)
       (sb-posix:pipe)
+    ;; (format t "<~A,~A>~%" read-fd write-fd)
     (make-pipe :read-fd read-fd :write-fd write-fd)))
 
-(defstruct command
+(defstruct arg-struct
   name
   args
   redirect-specs
@@ -55,13 +56,13 @@
 
 (defvar *virtual-targets* nil)
 
-(defun arg-to-string (arg)
-  (princ-to-string arg))
-
 (defun register-virtual-target (object function)
   (push (cons object function)
         *virtual-targets*)
   (values))
+
+(defun arg-to-string (arg)
+  (princ-to-string arg))
 
 (defvar *aliases* nil)
 
@@ -109,17 +110,17 @@
 
 (setf (get '& 'quote-args) t)
 (defun & (&rest argv)
-  (let ((command (parse-argv argv)))
-    (assert (not (command-virtual-redirect-spec command)))
-    (run-command command)))
+  (let ((arg-struct (parse-argv argv)))
+    (assert (not (arg-struct-virtual-redirect-spec arg-struct)))
+    (run-command arg-struct)))
 
 (defun cd (&optional (dir (user-homedir-pathname)))
   (let ((result (uiop:chdir dir)))
     (if (zerop result)
-      (let ((newdir (uiop:getcwd)))
-        (setf *default-pathname-defaults* newdir)
-        newdir)
-      nil)))
+        (let ((newdir (uiop:getcwd)))
+          (setf *default-pathname-defaults* newdir)
+          newdir)
+        nil)))
 
 (defun sh (string)
   (run (read-input-from-string string)))
@@ -157,13 +158,13 @@
            (cond ((loop for (test . fn) in *virtual-targets*
                         do (typecase test
                              (function
-                                (when (funcall test x)
-                                  (setf virtualp t)
-                                  (return fn)))
+                              (when (funcall test x)
+                                (setf virtualp t)
+                                (return fn)))
                              (otherwise
-                                (when (equal test x)
-                                  (setf virtualp t)
-                                  (return fn))))))
+                              (when (equal test x)
+                                (setf virtualp t)
+                                (return fn))))))
                  (t x))))
     (values target virtualp)))
 
@@ -212,10 +213,10 @@
                 (multiple-value-bind (target virtualp)
                     (redirect-target next)
                   (if virtualp
-                    (setf virtual-redirect-spec
-                          (list :append target))
-                    (push (list :>> +stdout+ target)
-                          redirect-specs)))
+                      (setf virtual-redirect-spec
+                            (list :append target))
+                      (push (list :>> +stdout+ target)
+                            redirect-specs)))
                 (setf rest (cdr rest)))
                ((equal arg "<")
                 (when lastp
@@ -229,10 +230,10 @@
                           (expand-files (arg-to-string arg)))))
                   (dolist (str (or files (list arg)))
                     (push str args))))))
-    (make-command :name (first argv)
-                  :args (nreverse args)
-                  :redirect-specs (delete-duplicates (nreverse redirect-specs) :key #'second)
-                  :virtual-redirect-spec virtual-redirect-spec)))
+    (make-arg-struct :name (first argv)
+                     :args (nreverse args)
+                     :redirect-specs (delete-duplicates (nreverse redirect-specs) :key #'second)
+                     :virtual-redirect-spec virtual-redirect-spec)))
 
 (defun proceed-redirects-for-stream (redirect-specs virtual-redirect-spec)
   (declare (special cleanup-hooks))
@@ -305,21 +306,21 @@
                         -1))
       (mapc 'funcall cleanup-hooks))))
 
-(defun lisp-apply (command
+(defun lisp-apply (arg-struct
                    &key
                      (stdin *standard-input*)
                      (stdout *standard-output*))
-  (lisp-eval (cons (command-name command)
-                   (if (get (command-name command) 'quote-args)
+  (lisp-eval (cons (arg-struct-name arg-struct)
+                   (if (get (arg-struct-name arg-struct) 'quote-args)
                        (mapcar (lambda (arg)
                                  `(quote ,arg))
-                               (command-args command))
-                       (command-args command)))
-             (command-redirect-specs command)
-             (command-virtual-redirect-spec command)
+                               (arg-struct-args arg-struct))
+                       (arg-struct-args arg-struct)))
+             (arg-struct-redirect-specs arg-struct)
+             (arg-struct-virtual-redirect-spec arg-struct)
              :stdin stdin
              :stdout stdout
-             :upcase (not (get (command-name command) 'quote-args))))
+             :upcase (not (get (arg-struct-name arg-struct) 'quote-args))))
 
 (defun proceed-redirects-for-fd (redirect-specs)
   (loop for redirect-spec in redirect-specs
@@ -327,13 +328,13 @@
              ((:> left right)
               (let ((fd))
                 (sb-posix:dup2 (if (integerp right)
-                                 right
-                                 (setf fd
-                                       (sb-posix:open right
-                                                      (logior sb-unix:o_wronly
-                                                              sb-unix:o_creat
-                                                              sb-unix:o_trunc)
-                                                      #o666)))
+                                   right
+                                   (setf fd
+                                         (sb-posix:open right
+                                                        (logior sb-unix:o_wronly
+                                                                sb-unix:o_creat
+                                                                sb-unix:o_trunc)
+                                                        #o666)))
                                (or left +stdout+))
                 (when fd (sb-posix:close fd))))
              ((:>> newfd file)
@@ -364,11 +365,11 @@
                                finally (return (babel:octets-to-string
                                                 octets :end n)))))))
 
-(defun run-command (command &optional prev-pipe next-pipe)
-  (let ((file (command-name command))
-        (args (command-args command))
-        (redirect-specs (command-redirect-specs command))
-        (virtual-redirect-spec (command-virtual-redirect-spec command)))
+(defun run-command (arg-struct &optional prev-pipe next-pipe)
+  (let ((file (arg-struct-name arg-struct))
+        (args (arg-struct-args arg-struct))
+        (redirect-specs (arg-struct-redirect-specs arg-struct))
+        (virtual-redirect-spec (arg-struct-virtual-redirect-spec arg-struct)))
     (let ((virtual-pipe (when virtual-redirect-spec (pipe))))
       (let ((pid (sb-posix:fork)))
         (cond
@@ -403,8 +404,8 @@
                  (funcall target text type))))
            pid))))))
 
-(defun command-type (command)
-  (let ((cmdname (command-name command)))
+(defun command-type (arg-struct)
+  (let ((cmdname (arg-struct-name arg-struct)))
     (typecase cmdname
       (cons
        :compound-lisp-form)
@@ -417,7 +418,7 @@
       (otherwise
        :simple-lisp-form))))
 
-(defun eval-dispatch (command prev-pipe next-pipe)
+(defun eval-dispatch (arg-struct prev-pipe next-pipe)
   (let ((stdin
           (when prev-pipe
             (make-instance 'fd-input-stream :fd (pipe-read-fd prev-pipe))))
@@ -426,16 +427,16 @@
             (make-instance 'fd-output-stream :fd (pipe-write-fd next-pipe)))))
     (when prev-pipe
       (sb-posix:close (pipe-write-fd prev-pipe)))
-    (unwind-protect (ecase (command-type command)
+    (unwind-protect (ecase (command-type arg-struct)
                       (:simple-lisp-form
-                       (lisp-apply command
+                       (lisp-apply arg-struct
                                    :stdin (or stdin *standard-input*)
                                    :stdout (or stdout *standard-output*)))
                       (:compound-lisp-form
-                       (lisp-eval `(progn ,(command-name command)
-                                          ,@(command-args command))
-                                  (command-redirect-specs command)
-                                  (command-virtual-redirect-spec command)
+                       (lisp-eval `(progn ,(arg-struct-name arg-struct)
+                                          ,@(arg-struct-args arg-struct))
+                                  (arg-struct-redirect-specs arg-struct)
+                                  (arg-struct-virtual-redirect-spec arg-struct)
                                   :stdin (or stdin *standard-input*)
                                   :stdout (or stdout *standard-output*))))
       (when prev-pipe (sb-posix:close (pipe-read-fd prev-pipe)))
@@ -447,16 +448,16 @@
 (defun pipeline-aux (command-list prev-pipe)
   (when command-list
     (let* ((next-pipe (when (rest command-list) (pipe)))
-           (command (parse-argv (first command-list)))
+           (arg-struct (parse-argv (first command-list)))
            (eval-value)
            (eval-p))
-      (ecase (command-type command)
+      (ecase (command-type arg-struct)
         ((:compound-lisp-form
           :simple-lisp-form)
          (setf eval-p t
-               eval-value (eval-dispatch command prev-pipe next-pipe)))
+               eval-value (eval-dispatch arg-struct prev-pipe next-pipe)))
         (:simple-command
-         (push (run-command command
+         (push (run-command arg-struct
                             prev-pipe
                             (when (rest command-list)
                               next-pipe))
@@ -484,10 +485,10 @@
 
 (defun list-&& (input)
   (let ((pos
-         (position-if (lambda (x)
-                        (or (equal x "&&")
-                            (equal x "||")))
-                      input)))
+          (position-if (lambda (x)
+                         (or (equal x "&&")
+                             (equal x "||")))
+                       input)))
     (cond ((null pos)
            (pipeline input))
           ((equal "&&" (elt input pos))
@@ -513,6 +514,6 @@
 (defun run (input)
   (let ((status (list-&& (replace-alias input))))
     (if (listp status)
-      (mapc #'pprint status)
-      (set-last-status status))
+        (mapc #'pprint status)
+        (set-last-status status))
     status))
