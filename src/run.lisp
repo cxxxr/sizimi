@@ -422,10 +422,6 @@
                  (funcall target output-str type)))
              pid)))))))
 
-(defun coerce-command (cmdname)
-  (or (search-path cmdname)
-      cmdname))
-
 (defun command-type (command)
   (let ((cmdname (command-name command)))
     (typecase cmdname
@@ -440,19 +436,27 @@
       (otherwise
        :simple-lisp-form))))
 
-(defun call-with-pipeline (prev-pipe
-                           next-pipe
-                           nextp
-                           body-fn)
+(defun eval-dispatch (command prev-pipe next-pipe)
   (let ((stdin
-         (when prev-pipe
-           (make-instance 'fd-input-stream :fd (pipe-read-fd prev-pipe))))
+          (when prev-pipe
+            (make-instance 'fd-input-stream :fd (pipe-read-fd prev-pipe))))
         (stdout
-         (when nextp
-           (make-instance 'fd-output-stream :fd (pipe-write-fd next-pipe)))))
+          (when next-pipe
+            (make-instance 'fd-output-stream :fd (pipe-write-fd next-pipe)))))
     (when prev-pipe
       (sb-posix:close (pipe-write-fd prev-pipe)))
-    (unwind-protect (funcall body-fn stdin stdout)
+    (unwind-protect (ecase (command-type command)
+                      (:simple-lisp-form
+                       (lisp-apply command
+                                   :stdin (or stdin *standard-input*)
+                                   :stdout (or stdout *standard-output*)))
+                      (:compound-lisp-form
+                       (lisp-eval `(progn ,(command-name command)
+                                          ,@(command-args command))
+                                  (command-redirect-specs command)
+                                  (command-virtual-redirect-spec command)
+                                  :stdin (or stdin *standard-input*)
+                                  :stdout (or stdout *standard-output*))))
       (when prev-pipe (sb-posix:close (pipe-read-fd prev-pipe)))
       (when stdin (close stdin))
       (when stdout (close stdout)))))
@@ -463,29 +467,13 @@
   (when command-list
     (let* ((next-pipe (when (rest command-list) (pipe)))
            (command (parse-argv (first command-list)))
-           (type (command-type command))
            (eval-value)
            (eval-p))
-      (ecase type
+      (ecase (command-type command)
         ((:compound-lisp-form
           :simple-lisp-form)
-         (setf eval-p t)
-         (setf eval-value
-               (call-with-pipeline prev-pipe
-                                   next-pipe
-                                   (rest command-list)
-                                   (if (eq type :simple-lisp-form)
-                                       (lambda (stdin stdout)
-                                         (lisp-apply command
-                                                     :stdin (or stdin *standard-input*)
-                                                     :stdout (or stdout *standard-output*)))
-                                       (lambda (stdin stdout)
-                                         (lisp-eval `(progn ,(command-name command)
-                                                            ,@(command-args command))
-                                                    (command-redirect-specs command)
-                                                    (command-virtual-redirect-spec command)
-                                                    :stdin (or stdin *standard-input*)
-                                                    :stdout (or stdout *standard-output*)))))))
+         (setf eval-p t
+               eval-value (eval-dispatch command prev-pipe next-pipe)))
         (:simple-command
          (push (run-command command
                             prev-pipe
