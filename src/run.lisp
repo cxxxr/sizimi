@@ -1,6 +1,7 @@
 (in-package :sizimi)
 
 (export '(register-virtual-target
+          defcommand
           run))
 
 (defstruct pipe
