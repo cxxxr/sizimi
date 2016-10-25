@@ -34,27 +34,11 @@
         *virtual-targets*)
   (values))
 
-(defun arg-to-string (arg)
-  (princ-to-string arg))
-
 (defmacro defcommand (name parameters &body body)
   `(progn
      (setf (get ',name :command) t)
      (export ',name)
      (defun ,name ,parameters ,@body)))
-
-(defcommand & (&rest argv)
-  (let ((arg-struct (parse-argv argv)))
-    (assert (not (arg-struct-virtual-redirect-spec arg-struct)))
-    (run-command arg-struct)))
-
-(defcommand cd (&optional (dir (user-homedir-pathname)))
-  (let ((result (uiop:chdir dir)))
-    (if (zerop result)
-        (let ((newdir (uiop:getcwd)))
-          (setf *default-pathname-defaults* newdir)
-          newdir)
-        nil)))
 
 (defun execvp (file args)
   (cffi:with-foreign-string (command file)
@@ -81,7 +65,7 @@
 
 (defun redirect-target (x)
   (cond ((or (symbolp x) (numberp x))
-         (setf x (arg-to-string x)))
+         (setf x (princ-to-string x)))
         ((consp x)
          (setf x (symbol-upcase-tree x))))
   (let* ((virtualp nil)
@@ -158,7 +142,7 @@
                (t
                 (let ((files
                         (when (or (symbolp arg) (numberp arg))
-                          (expand-files (arg-to-string arg)))))
+                          (expand-files (princ-to-string arg)))))
                   (dolist (str (or files (list arg)))
                     (push str args))))))
     (make-arg-struct :name (first argv)
@@ -245,7 +229,7 @@
          (args (arg-struct-args arg-struct))
          (commandp (get name :command)))
     (lisp-eval (if commandp
-                   (cons name (mapcar #'arg-to-string args))
+                   (cons name (mapcar #'princ-to-string args))
                    (cons name args))
                (arg-struct-redirect-specs arg-struct)
                (arg-struct-virtual-redirect-spec arg-struct)
@@ -321,8 +305,8 @@
                (sb-posix:dup2 (pipe-write-fd virtual-pipe) +stdout+)
                (sb-posix:close (pipe-write-fd virtual-pipe))
                (sb-posix:close (pipe-read-fd virtual-pipe)))
-             (execvp (arg-to-string file)
-                     (mapcar #'arg-to-string args))))
+             (execvp (princ-to-string file)
+                     (mapcar #'princ-to-string args))))
           (t
            (when prev-pipe
              (sb-posix:close (pipe-read-fd prev-pipe))
@@ -374,9 +358,8 @@
       (when stdin (close stdin))
       (when stdout (close stdout)))))
 
-(defvar *children* nil)
-
 (defun pipeline-aux (command-list prev-pipe)
+  (declare (special pids))
   (when command-list
     (let* ((next-pipe (when (rest command-list) (pipe)))
            (arg-struct (parse-argv (first command-list)))
@@ -392,22 +375,23 @@
                             prev-pipe
                             (when (rest command-list)
                               next-pipe))
-               *children*)))
+               pids)))
       (cond ((rest command-list)
              (pipeline-aux (rest command-list)
                            next-pipe))
             (eval-p
-             (dolist (pid *children*)
+             (dolist (pid pids)
                (sb-posix:waitpid pid 0))
              eval-value)
             (t
-             (dolist (pid (rest *children*))
+             (dolist (pid (rest pids))
                (sb-posix:waitpid pid 0))
-             (ash (nth-value 1 (sb-posix:waitpid (first *children*) 0)) -8))))))
+             (ash (nth-value 1 (sb-posix:waitpid (first pids) 0)) -8))))))
 
 (defun pipeline (input)
   (let ((command-list (split-sequence:split-sequence "|" input :test #'equal))
-        (*children* '()))
+        (pids '()))
+    (declare (special pids))
     (pipeline-aux command-list nil)))
 
 (defun true-p (x)

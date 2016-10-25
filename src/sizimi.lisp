@@ -24,3 +24,16 @@
       (sb-sys:interactive-interrupt (c)
         (declare (ignore c))
         (terpri)))))
+
+(defcommand & (&rest argv)
+  (let ((arg-struct (parse-argv argv)))
+    (assert (not (arg-struct-virtual-redirect-spec arg-struct)))
+    (run-command arg-struct)))
+
+(defcommand cd (&optional (dir (user-homedir-pathname)))
+  (let ((result (uiop:chdir dir)))
+    (if (zerop result)
+        (let ((newdir (uiop:getcwd)))
+          (setf *default-pathname-defaults* newdir)
+          newdir)
+        nil)))
