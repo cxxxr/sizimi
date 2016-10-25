@@ -8,10 +8,12 @@
                :cl-readline
                :cl-ppcre
                :alexandria
-               :split-sequence)
+               :split-sequence
+               :trivial-gray-streams)
   :components ((:module "src"
                 :serial t
-                :components ((:file "error")
+                :components ((:file "fd-streams")
+                             (:file "error")
                              (:file "util")
                              (:file "env")
                              (:file "complete")

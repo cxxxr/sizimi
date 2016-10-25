@@ -9,6 +9,10 @@
    :alexandria
    :destructuring-ecase)
   (:import-from
+   :sizimi.fd-streams
+   :fd-input-stream
+   :fd-output-stream)
+  (:import-from
    :sizimi.env
    :set-last-status)
   (:import-from
@@ -441,15 +445,14 @@
                            nextp
                            body-fn)
   (let ((stdin
-          (when prev-pipe
-            (sb-sys:make-fd-stream (pipe-read-fd prev-pipe) :input t)))
+         (when prev-pipe
+           (make-instance 'fd-input-stream :fd (pipe-read-fd prev-pipe))))
         (stdout
-          (when nextp
-            (sb-sys:make-fd-stream (pipe-write-fd next-pipe) :output t))))
+         (when nextp
+           (make-instance 'fd-output-stream :fd (pipe-write-fd next-pipe)))))
     (when prev-pipe
       (sb-posix:close (pipe-write-fd prev-pipe)))
-    (unwind-protect
-         (funcall body-fn stdin stdout)
+    (unwind-protect (funcall body-fn stdin stdout)
       (when prev-pipe (sb-posix:close (pipe-read-fd prev-pipe)))
       (when stdin (close stdin))
       (when stdout (close stdout)))))
