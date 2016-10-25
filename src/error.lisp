@@ -1,10 +1,4 @@
-(in-package :cl-user)
-(defpackage :sizimi.error
-  (:use :cl)
-  (:export
-   :sizimi-error
-   :missing-redirection-target))
-(in-package :sizimi.error)
+(in-package :sizimi)
 
 (define-condition sizimi-error (simple-error)
   ())

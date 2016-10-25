@@ -1,12 +1,4 @@
-(in-package :cl-user)
-(defpackage :sizimi.env
-  (:use :cl)
-  (:export
-   :*prompt-function*
-   :getenv
-   :set-last-status
-   :default-prompt))
-(in-package :sizimi.env)
+(in-package :sizimi)
 
 (defvar *last-status* 0)
 (defvar *prompt-function* 'default-prompt)

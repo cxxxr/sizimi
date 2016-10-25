@@ -1,34 +1,7 @@
-(in-package :cl-user)
-(defpackage :sizimi.run
-  (:use
-   :cl
-   :split-sequence
-   :sizimi.error)
-  (:import-from
-   :alexandria
-   :destructuring-ecase)
-  (:import-from
-   :sizimi.fd-streams
-   :fd-input-stream
-   :fd-output-stream)
-  (:import-from
-   :sizimi.env
-   :set-last-status)
-  (:import-from
-   :sizimi.util
-   :symbol-upcase
-   :symbol-upcase-tree
-   :soft-string=)
-  (:import-from
-   :sizimi.reader
-   :read-input-from-string)
-  (:export
-   :register-virtual-target
-   :alias
-   :unalias
-   :&
-   :run))
-(in-package :sizimi.run)
+(in-package :sizimi)
+
+(export '(register-virtual-target
+          run))
 
 (defstruct pipe
   read-fd
@@ -67,6 +40,7 @@
 (defmacro defcommand (name parameters &body body)
   `(progn
      (setf (get ',name :command) t)
+     (export ',name)
      (defun ,name ,parameters ,@body)))
 
 (defvar *aliases* nil)
@@ -123,9 +97,6 @@
           newdir)
         nil)))
 
-(defun sh (string)
-  (run (read-input-from-string string)))
-
 (defun execvp (file args)
   (cffi:with-foreign-string (command file)
     (let ((argc (1+ (length args))))
@@ -171,7 +142,7 @@
 
 (defun file-descriptor-p (x)
   (ppcre:register-groups-bind (n)
-      ("^&(\\d+)$" (arg-to-string x))
+      ("^&(\\d+)$" (princ-to-string x))
     (when n
       (parse-integer n))))
 
@@ -257,7 +228,7 @@
                    cleanup-hooks)
              stream)))
     (loop for redirect-spec in redirect-specs
-          do (destructuring-ecase redirect-spec
+          do (alexandria:destructuring-ecase redirect-spec
                ((:> left right)
                 (set-stream (if left
                                 (fd-to-stream left)
@@ -325,7 +296,7 @@
 
 (defun proceed-redirects-for-fd (redirect-specs)
   (loop for redirect-spec in redirect-specs
-        do (destructuring-ecase redirect-spec
+        do (alexandria:destructuring-ecase redirect-spec
              ((:> left right)
               (let ((fd))
                 (sb-posix:dup2 (if (integerp right)
@@ -476,7 +447,7 @@
              (ash (nth-value 1 (sb-posix:waitpid (first *children*) 0)) -8))))))
 
 (defun pipeline (input)
-  (let ((command-list (split-sequence "|" input :test #'equal))
+  (let ((command-list (split-sequence:split-sequence "|" input :test #'equal))
         (*children* '()))
     (pipeline-aux command-list nil)))
 

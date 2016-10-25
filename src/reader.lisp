@@ -1,17 +1,6 @@
-(in-package :cl-user)
-(defpackage :sizimi.reader
-  (:use :cl)
-  (:import-from
-   :sizimi.env
-   :getenv
-   :*prompt-function*)
-  (:import-from
-   :sizimi.complete
-   :complete)
-  (:export
-   :read-input
-   :read-input-from-string))
-(in-package :sizimi.reader)
+(in-package :sizimi)
+
+(export '(read-input-from-string))
 
 (defvar *sizimi-readtable* (copy-readtable nil))
 (setf (readtable-case *sizimi-readtable*) :preserve)

@@ -1,33 +1,7 @@
-(in-package :cl-user)
-(defpackage :sizimi
-  (:use :cl)
-  (:import-from
-   :sizimi.reader
-   :read-input
-   :read-input-from-string)
-  (:import-from
-   :sizimi.run
-   :register-virtual-target
-   :alias
-   :unalias
-   :&
-   :cd
-   :sh
-   :run)
-  (:import-from
-   :sizimi.env
-   :*prompt-function*)
-  (:export
-   :load-rc
-   :cd
-   :sh
-   :alias
-   :unalias
-   :&
-   :toplevel-loop
-   :register-virtual-target
-   :*prompt-function*))
 (in-package :sizimi)
+
+(export '(load-rc
+          toplevel-loop))
 
 (defun load-rc ()
   (let ((pathname (probe-file

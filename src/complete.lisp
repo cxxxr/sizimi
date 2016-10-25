@@ -1,12 +1,4 @@
-(in-package :cl-user)
-(defpackage :sizimi.complete
-  (:use :cl)
-  (:import-from
-   :sizimi.util
-   :path-files)
-  (:export
-   :complete))
-(in-package :sizimi.complete)
+(in-package :sizimi)
 
 (defun common-prefix (elements)
   (reduce (lambda (str1 str2)

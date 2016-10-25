@@ -1,13 +1,4 @@
-(in-package :cl-user)
-(defpackage :sizimi.util
-  (:use :cl)
-  (:export
-   :map-path
-   :path-files
-   :symbol-upcase
-   :symbol-upcase-tree
-   :soft-string=))
-(in-package :sizimi.util)
+(in-package :sizimi)
 
 (defun map-path (fn)
   (dolist (path (uiop:split-string (uiop:getenv "PATH") :separator ":"))
