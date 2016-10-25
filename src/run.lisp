@@ -253,34 +253,6 @@
                   :redirect-specs (delete-duplicates (nreverse redirect-specs) :key #'second)
                   :virtual-redirect-spec virtual-redirect-spec)))
 
-(defun proceed-redirects-for-fd (redirect-specs)
-  (loop for redirect-spec in redirect-specs
-        do (destructuring-ecase redirect-spec
-             ((:> left right)
-              (let ((fd))
-                (sb-posix:dup2 (if (integerp right)
-                                 right
-                                 (setf fd
-                                       (sb-posix:open right
-                                                      (logior sb-unix:o_wronly
-                                                              sb-unix:o_creat
-                                                              sb-unix:o_trunc)
-                                                      #o666)))
-                               (or left +stdout+))
-                (when fd (sb-posix:close fd))))
-             ((:>> newfd file)
-              (let ((fd (sb-posix:open file
-                                       (logior sb-unix:o_append
-                                               sb-unix:o_creat
-                                               sb-unix:o_wronly)
-                                       #o666)))
-                (sb-posix:dup2 fd newfd)
-                (sb-posix:close fd)))
-             ((:< newfd file)
-              (let ((fd (sb-posix:open file (logior sb-unix:o_rdonly) #o666)))
-                (sb-posix:dup2 fd newfd)
-                (sb-posix:close fd))))))
-
 (defun get-standard-stream-symbol-from-fd (fd)
   (cond ((= fd +stdin+)
          '*standard-input*)
@@ -368,6 +340,49 @@
              :stdout stdout
              :upcase (not (get (command-name command) 'quote-args))))
 
+(defun proceed-redirects-for-fd (redirect-specs)
+  (loop for redirect-spec in redirect-specs
+        do (destructuring-ecase redirect-spec
+             ((:> left right)
+              (let ((fd))
+                (sb-posix:dup2 (if (integerp right)
+                                 right
+                                 (setf fd
+                                       (sb-posix:open right
+                                                      (logior sb-unix:o_wronly
+                                                              sb-unix:o_creat
+                                                              sb-unix:o_trunc)
+                                                      #o666)))
+                               (or left +stdout+))
+                (when fd (sb-posix:close fd))))
+             ((:>> newfd file)
+              (let ((fd (sb-posix:open file
+                                       (logior sb-unix:o_append
+                                               sb-unix:o_creat
+                                               sb-unix:o_wronly)
+                                       #o666)))
+                (sb-posix:dup2 fd newfd)
+                (sb-posix:close fd)))
+             ((:< newfd file)
+              (let ((fd (sb-posix:open file (logior sb-unix:o_rdonly) #o666)))
+                (sb-posix:dup2 fd newfd)
+                (sb-posix:close fd))))))
+
+(defun read-from-pipe (fd)
+  (let* ((count 100)
+         (buf (cffi:foreign-alloc :unsigned-char
+                                  :count count
+                                  :initial-element 0))
+         (octets (make-array count :element-type '(unsigned-byte 8))))
+    (apply #'concatenate 'string
+           (loop for n = (sb-posix:read fd buf count)
+                 until (zerop n)
+                 collect (loop for i from 0 below n
+                               do (setf (aref octets i)
+                                        (cffi:mem-aref buf :unsigned-char i))
+                               finally (return (babel:octets-to-string
+                                                octets :end n)))))))
+
 (defun run-command (command &optional prev-pipe next-pipe)
   (let ((file (command-name command))
         (args (command-args command))
@@ -396,31 +411,16 @@
              (execvp (arg-to-string file)
                      (mapcar #'arg-to-string args))))
           (t
-           (let (output-str)
-             (when prev-pipe
-               (sb-posix:close (pipe-read-fd prev-pipe))
-               (sb-posix:close (pipe-write-fd prev-pipe)))
-             (when virtual-redirect-spec
-               (sb-posix:close (pipe-write-fd virtual-pipe))
-               (let* ((count 100)
-                      (buf (cffi:foreign-alloc :unsigned-char
-                                               :count count
-                                               :initial-element 0))
-                      (octets (make-array count :element-type '(unsigned-byte 8))))
-                 (setf output-str
-                       (apply #'concatenate 'string
-                              (loop for n = (sb-posix:read (pipe-read-fd virtual-pipe) buf count)
-                                    until (zerop n)
-                                    collect (loop for i from 0 below n
-                                                  do (setf (aref octets i)
-                                                           (cffi:mem-aref buf :unsigned-char i))
-                                                  finally (return (babel:octets-to-string
-                                                                   octets :end n)))))))
-               (sb-posix:close (pipe-read-fd virtual-pipe)))
-             (when output-str
+           (when prev-pipe
+             (sb-posix:close (pipe-read-fd prev-pipe))
+             (sb-posix:close (pipe-write-fd prev-pipe)))
+           (when virtual-redirect-spec
+             (sb-posix:close (pipe-write-fd virtual-pipe))
+             (let ((text (read-from-pipe (pipe-read-fd virtual-pipe))))
+               (sb-posix:close (pipe-read-fd virtual-pipe))
                (destructuring-bind (type target) virtual-redirect-spec
-                 (funcall target output-str type)))
-             pid)))))))
+                 (funcall target text type))))
+           pid))))))
 
 (defun command-type (command)
   (let ((cmdname (command-name command)))
