@@ -3,8 +3,7 @@
   (:use
    :cl
    :split-sequence
-   :sizimi.error
-   :sizimi.util)
+   :sizimi.error)
   (:import-from
    :alexandria
    :destructuring-ecase)
@@ -122,7 +121,7 @@
 (defun sh (string)
   (run (read-input-from-string string)))
 
-(defun execvp-1 (file args)
+(defun execvp (file args)
   (cffi:with-foreign-string (command file)
     (let ((argc (1+ (length args))))
       (cffi:with-foreign-object (argv :string (1+ argc))
@@ -132,23 +131,10 @@
         (setf (cffi:mem-aref argv :string 0) command)
         (setf (cffi:mem-aref argv :string argc) (cffi:null-pointer))
         (when (minusp (%execvp command argv))
-          (cond
-            ((null (search-path file))
-             (format t "~A: command not found~%" file))
-            (t
-             (uiop:println (%strerror *errno*))))
+          (case *errno*
+            (2 (format t "~A: command not found~%" file))
+            (otherwise (uiop:println (%strerror *errno*))))
           (uiop:quit *errno*))))))
-
-(defun execvp (file args)
-  (execvp-1 file
-            (mapcar #'arg-to-string
-                    args)))
-
-(defun search-path (file)
-  (map-path (lambda (file1)
-              (when (equal file (pathname-name file1))
-                (return-from search-path
-                  (princ-to-string file1))))))
 
 (defun tried-list (list)
   (loop for rest on list
