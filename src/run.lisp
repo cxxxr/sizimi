@@ -253,76 +253,76 @@
                   :redirect-specs (delete-duplicates (nreverse redirect-specs) :key #'second)
                   :virtual-redirect-spec virtual-redirect-spec)))
 
-(defun get-standard-stream-symbol-from-fd (fd)
-  (cond ((= fd +stdin+)
-         '*standard-input*)
-        ((= fd +stdout+)
-         '*standard-output*)
-        ((= fd +stderr+)
-         '*error-output*)
-        (t
-         (error "invalid fd: ~D" fd))))
+(defun proceed-redirects-for-stream (redirect-specs virtual-redirect-spec)
+  (declare (special cleanup-hooks))
+  (flet ((fd-to-stream (fd)
+           (cond ((= fd +stdin+) '*standard-input*)
+                 ((= fd +stdout+) '*standard-output*)
+                 ((= fd +stderr+) '*error-output*)
+                 (t (error "invalid fd: ~D" fd))))
+         (set-stream (symbol new-value)
+           (let ((old-value (symbol-value symbol)))
+             (push (lambda ()
+                     (setf (symbol-value symbol)
+                           old-value))
+                   cleanup-hooks))
+           (setf (symbol-value symbol)
+                 new-value))
+         (open* (&rest args)
+           (let ((stream (apply 'open args)))
+             (push (lambda () (close stream))
+                   cleanup-hooks)
+             stream)))
+    (loop for redirect-spec in redirect-specs
+          do (destructuring-ecase redirect-spec
+               ((:> left right)
+                (set-stream (if left
+                                (fd-to-stream left)
+                                '*standard-input*)
+                            (if (integerp right)
+                                (fd-to-stream right)
+                                (open* right
+                                       :direction :output
+                                       :if-exists :supersede))))
+               ((:>> newfd file)
+                (declare (ignore newfd))
+                (set-stream '*standard-output*
+                            (open* file
+                                   :direction :output
+                                   :if-exists :append)))
+               ((:< newfd file)
+                (declare (ignore newfd))
+                (set-stream '*standard-input*
+                            (open* file
+                                   :direction :input)))))
+    (when virtual-redirect-spec
+      (destructuring-bind (type target) virtual-redirect-spec
+        (let ((stream (make-string-output-stream)))
+          (set-stream '*standard-output* stream)
+          (push (lambda ()
+                  (funcall target (get-output-stream-string stream) type)
+                  (close stream))
+                cleanup-hooks))))))
 
 (defun lisp-eval (x redirect-specs virtual-redirect-spec
                   &key
-                  (stdin *standard-input*)
-                  (stdout *standard-output*)
-                  (upcase t))
+                    (stdin *standard-input*)
+                    (stdout *standard-output*)
+                    (upcase t))
   (let ((*standard-input* stdin)
-        (*standard-output* stdout))
-    (let ((cleanup-hooks))
-      (flet ((set-stream (symbol new-value)
-               (let ((old-value (symbol-value symbol)))
-                 (push (lambda ()
-                         (setf (symbol-value symbol)
-                               old-value))
-                       cleanup-hooks))
-               (setf (symbol-value symbol)
-                     new-value))
-             (open* (&rest args)
-               (let ((stream (apply 'open args)))
-                 (push (lambda () (close stream))
-                       cleanup-hooks)
-                 stream)))
-        (loop for redirect-spec in redirect-specs
-              do (destructuring-ecase redirect-spec
-                   ((:> left right)
-                    (set-stream (if left
-                                  (get-standard-stream-symbol-from-fd left)
-                                  '*standard-input*)
-                                (if (integerp right)
-                                  (get-standard-stream-symbol-from-fd right)
-                                  (open* right
-                                         :direction :output
-                                         :if-exists :supersede))))
-                   ((:>> newfd file)
-                    (declare (ignore newfd))
-                    (set-stream '*standard-output*
-                                (open* file
-                                       :direction :output
-                                       :if-exists :append)))
-                   ((:< newfd file)
-                    (declare (ignore newfd))
-                    (set-stream '*standard-input*
-                                (open* file
-                                       :direction :input)))))
-        (when virtual-redirect-spec
-          (destructuring-bind (type target) virtual-redirect-spec
-            (let ((stream (make-string-output-stream)))
-              (set-stream '*standard-output* stream)
-              (push (lambda ()
-                      (funcall target (get-output-stream-string stream) type)
-                      (close stream))
-                    cleanup-hooks)))))
-      (unwind-protect (handler-case
-                          (multiple-value-list
-                           (eval (if upcase
+        (*standard-output* stdout)
+        (cleanup-hooks))
+    (declare (special cleanup-hooks))
+    (proceed-redirects-for-stream redirect-specs virtual-redirect-spec)
+    (unwind-protect (handler-case
+                        (multiple-value-list
+                         (eval (if upcase
                                    (symbol-upcase-tree x)
                                    x)))
-                        (error (c)
-                          (uiop:println c)
-                          -1))
-        (mapc 'funcall cleanup-hooks)))))
+                      (error (c)
+                        (uiop:println c)
+                        -1))
+      (mapc 'funcall cleanup-hooks))))
 
 (defun lisp-apply (command
                    &key
