@@ -15,6 +15,11 @@
    :sizimi.env
    :set-last-status)
   (:import-from
+   :sizimi.util
+   :symbol-upcase
+   :symbol-upcase-tree
+   :soft-string=)
+  (:import-from
    :sizimi.reader
    :read-input-from-string)
   (:export
@@ -49,57 +54,55 @@
 (defparameter +stderr+ 2)
 
 (defvar *virtual-targets* nil)
-(defvar *aliases* (make-hash-table :test 'equal))
 
 (defun arg-to-string (arg)
   (princ-to-string arg))
-
-(defun symbol-upcase (sym)
-  (intern (string-upcase sym) (symbol-package sym)))
-
-(defun symbol-upcase-tree (tree)
-  (cond ((consp tree)
-         (cons (symbol-upcase-tree (car tree))
-               (symbol-upcase-tree (cdr tree))))
-        ((symbolp tree)
-         (symbol-upcase tree))
-        (t
-         tree)))
 
 (defun register-virtual-target (object function)
   (push (cons object function)
         *virtual-targets*)
   (values))
 
-(defun show-alias-1 (name value)
-  (format t "alias ~S ~S~%" name value))
+(defvar *aliases* nil)
 
-(defun show-aliases ()
-  (maphash #'show-alias-1
-           *aliases*))
+(defun alias-value (name)
+  (cdr (assoc name *aliases* :test #'soft-string=)))
 
 (defun show-alias (name)
-  (multiple-value-bind (value foundp)
-      (gethash name *aliases*)
-    (when foundp
-      (show-alias-1 name value))))
+  (format t "~&alias ~S ~S~%"
+          name
+          (alias-value name)))
+
+(defun show-aliases ()
+  (dolist (alias *aliases*)
+    (show-alias (car alias))))
 
 (defun set-alias (name value)
-  (setf (gethash (arg-to-string name) *aliases*)
-        (arg-to-string value)))
+  (push (cons name value) *aliases*))
 
 (defun alias (&rest args)
-  (let ((n (length args)))
-    (case n
-      (0 (show-aliases))
-      (1 (show-alias (first args)))
-      (otherwise
-         (set-alias (first args) (second args)))))
+  (case (length args)
+    (0 (show-aliases))
+    (1 (show-alias (first args)))
+    (otherwise
+     (set-alias (first args) (second args))))
   (values))
 
 (defun unalias (name)
-  (remhash name *aliases*)
+  (setf *aliases* (remove name *aliases* :test #'soft-string= :key #'car))
   (values))
+
+(defun get-alias (name)
+  (loop with input = (list name)
+        and *aliases* = *aliases*
+        for value = (alias-value (first input))
+        if value
+          do (unalias (first input))
+             (setf input
+                   (append (read-input-from-string value)
+                           (rest input)))
+        else
+          return input))
 
 (defun aliasp (name)
   (gethash (arg-to-string name) *aliases*))
@@ -173,15 +176,7 @@
 (defun expand-files (str)
   (mapcar #'namestring (directory str :resolve-symlinks nil)))
 
-(defun maybe-expand-alias (argv)
-  (let ((string (aliasp (first argv))))
-    (if string
-      (append (read-input-from-string string)
-              (rest argv))
-      argv)))
-
 (defun parse-argv (argv)
-  (setf argv (maybe-expand-alias argv))
   (let ((args)
         (redirect-specs)
         (virtual-redirect-spec))
@@ -484,7 +479,7 @@
     (pipeline-aux command-list nil)))
 
 (defun true-p (x)
-  (or (and (integerp x) (= x 0))
+  (or (and (integerp x) (zerop x))
       (not (null x))))
 
 (defun list-&& (input)
@@ -506,8 +501,17 @@
                  status
                  (list-&& (subseq input (1+ pos)))))))))
 
+(defun replace-alias (input)
+  (loop for pos from 0
+        for prev = nil then curr
+        for curr in input
+        if (or (zerop pos) (member prev '("&&" "||" "|") :test #'equal))
+          append (get-alias curr)
+        else
+          collect curr))
+
 (defun run (input)
-  (let ((status (list-&& input)))
+  (let ((status (list-&& (replace-alias input))))
     (if (listp status)
       (mapc #'pprint status)
       (set-last-status status))

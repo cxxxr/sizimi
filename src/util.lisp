@@ -3,7 +3,10 @@
   (:use :cl)
   (:export
    :map-path
-   :path-files))
+   :path-files
+   :symbol-upcase
+   :symbol-upcase-tree
+   :soft-string=))
 (in-package :sizimi.util)
 
 (defun map-path (fn)
@@ -16,3 +19,20 @@
     (map-path (lambda (file)
                 (push (file-namestring file) files)))
     (nreverse files)))
+
+(defun symbol-upcase (sym)
+  (intern (string-upcase sym) (symbol-package sym)))
+
+(defun symbol-upcase-tree (tree)
+  (cond ((consp tree)
+         (cons (symbol-upcase-tree (car tree))
+               (symbol-upcase-tree (cdr tree))))
+        ((symbolp tree)
+         (symbol-upcase tree))
+        (t
+         tree)))
+
+(defun soft-string= (x y)
+  (and (or (stringp x) (symbolp x))
+       (or (stringp y) (symbolp y))
+       (string= x y)))
