@@ -150,8 +150,9 @@
         (*readline-function* #'rl-readline-function))
     (prog1 (read-input-raw)
       (let ((string
-              (format nil "~{~A~^~%~}"
-                      (nreverse *readline-lines*))))
+             (string-trim '(#\linefeed #\newline #\return #\space #\tab)
+                          (format nil "~{~A~^~%~}"
+                                  (nreverse *readline-lines*)))))
         (cffi:foreign-funcall "add_history"
                               :string string
                               :void)))))
