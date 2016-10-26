@@ -1,5 +1,7 @@
 (in-package :sizimi)
 
+(export '(*prompt-function*))
+
 (defvar *last-status* 0)
 (defvar *prompt-function* 'default-prompt)
 
