@@ -97,18 +97,24 @@
         and pos = 0
         and value
         and line = (funcall *readline-function* t)
-        do (multiple-value-bind (start end)
-               (ppcre:scan "^\\.\\.?(?:\\s|$)" line :start pos)
-             (when start
-               (let ((n (- end start)))
-                 (push (make-string n :initial-element #\.)
-                       tokens)
-                 (setf pos end))))
-           (handler-case (multiple-value-setq (value pos)
-                           (read-from-string line nil eof-value :start pos))
-             (end-of-file ()
-               (multiple-value-setq (value line pos)
-                 (read-input-sexp line :start pos))))
+        do (cond
+             ((ppcre:scan "^\\(" line :start pos)
+              (let ((*readtable* (copy-readtable nil)))
+                (multiple-value-setq (value line pos)
+                  (read-input-sexp line :start pos))))
+             (t
+              (multiple-value-bind (start end)
+                  (ppcre:scan "^\\.\\.?(?:\\s|$)" line :start pos)
+                (when start
+                  (let ((n (- end start)))
+                    (push (make-string n :initial-element #\.)
+                          tokens)
+                    (setf pos end))))
+              (handler-case (multiple-value-setq (value pos)
+                              (read-from-string line nil eof-value :start pos))
+                (end-of-file ()
+                  (multiple-value-setq (value line pos)
+                    (read-input-sexp line :start pos))))))
         until (eq eof-value value)
         do (push value tokens)
         finally (return (nreverse tokens))))
